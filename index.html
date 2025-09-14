@@ -47,6 +47,9 @@
     .instructions { margin-top: 20px; font-size: 18px; max-width: 300px; line-height: 1.4; }
     .final-score { font-size: 60px; color: #f1c40f; margin: 10px 0; }
     .best-score { font-size: 24px; color: #3498db; margin-bottom: 20px; }
+
+    /* logo style if you added <img class="logo"> to your start/gameover screens */
+    .logo { max-width: 150px; height: auto; margin-bottom: 20px; display:block; }
   </style>
 </head>
 <body>
@@ -54,11 +57,13 @@
     <canvas id="gameCanvas" width="360" height="640"></canvas>
     <div class="score-display" id="scoreDisplay">0</div>
     <div class="start-screen" id="startScreen">
+      <img src="logo.png" alt="Game Logo" class="logo" style="display:none;">
       <h1>Flappy Bird</h1>
       <button id="startButton">Start Game</button>
       <div class="instructions">Press SPACE or click/tap to flap. Avoid the pipes!</div>
     </div>
     <div class="game-over" id="gameOverScreen">
+      <img src="gameover.png" alt="Game Over" class="logo" style="display:none;">
       <h1>Game Over</h1>
       <div class="final-score" id="finalScore">0</div>
       <div class="best-score" id="bestScore">Best: 0</div>
@@ -109,18 +114,25 @@
     const bird = {
       x: 50, y: canvas.height/2, width: 64, height: 34,
       gravity: 0.5, velocity: 0, jump: -8, rotation: 0,
+      isGhost: false, // toggled during ghost powerup
       draw() {
         if (birdImg.loaded) {
           ctx.save();
+          ctx.globalAlpha = this.isGhost ? 0.5 : 1; // visual hint when ghost
           ctx.translate(this.x, this.y);
           ctx.rotate(this.rotation);
           ctx.drawImage(birdImg, -this.width/2, -this.height/2, this.width, this.height);
           ctx.restore();
+          ctx.globalAlpha = 1;
         } else {
+          ctx.save();
+          ctx.globalAlpha = this.isGhost ? 0.5 : 1;
           ctx.fillStyle = "#f1c40f";
           ctx.beginPath();
           ctx.arc(this.x, this.y, this.width/2, 0, Math.PI*2);
           ctx.fill();
+          ctx.restore();
+          ctx.globalAlpha = 1;
         }
       },
       update() {
@@ -141,12 +153,12 @@
         try { flapSound.currentTime = 0; } catch (e) {}
         flapSound.play().catch(()=>{});
       },
-      reset() { this.y = canvas.height/2; this.velocity = 0; }
+      reset() { this.y = canvas.height/2; this.velocity = 0; this.isGhost = false; }
     };
 
     // Pipes
     const pipes = {
-      position: [], gap: 130, dx: 2,
+      position: [], gap: 130, dx: 2, ignoreCollision: false,
       draw() {
         this.position.forEach(p => {
           if (pipeNorth.loaded) {
@@ -160,20 +172,51 @@
         });
       },
       update() {
-        if (gameStarted && frames % 100 === 0) {
+        // spawn new pipes on interval (same behavior as before)
+        if (gameStarted && frames % 140 === 0) {
           let topY = -Math.floor(Math.random() * 200) - 100;
           this.position.push({ x: canvas.width, y: topY, width: PIPE_WIDTH, height: PIPE_HEIGHT });
         }
-        this.position.forEach((p, i) => {
+
+        // iterate backwards so we can safely remove items
+        for (let i = this.position.length - 1; i >= 0; i--) {
+          const p = this.position[i];
           p.x -= this.dx;
-          if (p.x + p.width <= 0) { this.position.shift(); score++; scoreDisplay.textContent = score; scoreSound.play().catch(()=>{}); }
-          if (bird.x + bird.width/2 > p.x && bird.x - bird.width/2 < p.x + p.width &&
-             (bird.y - bird.height/2 < p.y + p.height || bird.y + bird.height/2 > p.y + p.height + this.gap)) {
-            hitSound.play().catch(()=>{}); endGame();
+
+          // remove when off-screen (and award score)
+          if (p.x + p.width <= 0) {
+            this.position.splice(i, 1);
+            score++;
+            scoreDisplay.textContent = score;
+            scoreSound.play().catch(()=>{});
+            continue;
           }
-        });
+
+          // collision check (skip if ghost mode active)
+          if (!this.ignoreCollision) {
+            // smaller bird hitbox for fairness
+            const hitbox = {
+              left: bird.x - bird.width * 0.3,
+              right: bird.x + bird.width * 0.3,
+              top: bird.y - bird.height * 0.3,
+              bottom: bird.y + bird.height * 0.3
+            };
+
+            const topPipeBottomY = p.y + p.height;
+            const bottomPipeTopY = p.y + p.height + this.gap;
+
+            if (
+              hitbox.right > p.x &&
+              hitbox.left < p.x + p.width &&
+              (hitbox.top < topPipeBottomY || hitbox.bottom > bottomPipeTopY)
+            ) {
+              hitSound.play().catch(()=>{});
+              endGame();
+            }
+          }
+        }
       },
-      reset() { this.position = []; }
+      reset() { this.position = []; this.ignoreCollision = false; this.dx = 2; }
     };
 
     // Background & Ground
@@ -196,9 +239,20 @@
       }
     }
 
-    function draw() { drawBackground(); pipes.draw(); drawGround(); bird.draw(); }
+    // Main loop with correct draw order (powerups drawn between pipes & ground/bird)
+    function loop() {
+      update();
+      drawBackground();
+      pipes.draw();
+      // call powerups (powerups.js provides window.handlePowerUps)
+      try { if (typeof handlePowerUps === 'function') handlePowerUps(ctx); } catch (e) { console.error('handlePowerUps error', e); }
+      drawGround();
+      bird.draw();
+      frames++;
+      if (!gameOver) requestAnimationFrame(loop);
+    }
+
     function update() { bird.update(); pipes.update(); }
-    function loop() { update(); draw(); frames++; if (!gameOver) requestAnimationFrame(loop); }
 
     function startGame() {
       gameStarted = true; gameOver = false; score = 0;
@@ -224,5 +278,8 @@
 
     bestScoreElement.textContent = "Best: " + bestScore;
   </script>
+
+  <!-- powerups.js must be in same directory -->
+  <script src="powerups.js"></script>
 </body>
 </html>
